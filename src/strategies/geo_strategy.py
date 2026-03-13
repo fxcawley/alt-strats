@@ -46,7 +46,6 @@ class GeoStrategy:
         self.fred_surprises = fred_surprises
         self.long_only = long_only
         self.top_n = top_n
-        self._last_weights: dict[str, float] | None = None
 
     def _get_luminosity_signal(self, date: pd.Timestamp) -> dict[str, float] | None:
         """Get luminosity signal for a date."""
@@ -84,14 +83,18 @@ class GeoStrategy:
         universe: list[str],
         lookback: dict[str, pd.DataFrame],
     ) -> dict[str, float] | None:
-        """Generate portfolio weights from geo/macro signals."""
+        """Generate portfolio weights from geo/macro signals.
+
+        Returns None if no data sources have any data for this date.
+        Returns {} if signals compute but produce no valid positions.
+        """
         lum_signal = self._get_luminosity_signal(date)
         stress = self._get_stress_signal(date)
         fred = self._get_fred_signal(date)
 
-        # If no data sources available, keep existing positions
+        # If no data sources available at all, no opinion
         if lum_signal is None and stress is None and fred is None:
-            return self._last_weights if self._last_weights else None
+            return None
 
         combined = combine_geo_signals(
             luminosity_signals=lum_signal,
@@ -100,7 +103,7 @@ class GeoStrategy:
         )
 
         if not combined:
-            return self._last_weights if self._last_weights else None
+            return {}
 
         weights = geo_signal_to_weights(
             combined, universe,
@@ -108,8 +111,5 @@ class GeoStrategy:
             long_only=self.long_only,
         )
 
-        if not weights:
-            return self._last_weights if self._last_weights else None
-
-        self._last_weights = weights
+        # weights can be {} if no combined signals map to universe
         return weights

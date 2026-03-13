@@ -257,7 +257,7 @@ def run_backtest(
                     new_weight = new_shares * price / portfolio_value
                     if abs(new_weight - old_weight) < rebalance_threshold:
                         # Keep existing position -- below threshold
-                        if old_shares > 0:
+                        if old_shares != 0.0:
                             target_shares[tkr] = old_shares
                         elif tkr in target_shares:
                             del target_shares[tkr]

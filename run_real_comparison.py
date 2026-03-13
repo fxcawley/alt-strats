@@ -264,17 +264,19 @@ def main():
     for ticker in positioning.columns:
         try:
             prices = fetch_prices(ticker, start="2016-01-01")
-            weekly_returns = prices["Close"].resample("W").last().pct_change().shift(-1)
+            weekly_close = prices["Close"].resample("W").last()
+            # Forward return: return from this week-end to next week-end
+            fwd_returns = weekly_close.pct_change().shift(-1)
 
             for date in zscore.index:
                 z = zscore.loc[date, ticker]
                 if pd.isna(z):
                     continue
-                # Find the next weekly return after this date
-                future = weekly_returns.loc[date:]
-                if len(future) < 2:
+                # Find the forward return for the week starting at this date
+                future = fwd_returns.loc[date:]
+                if future.empty:
                     continue
-                fwd_ret = future.iloc[1]
+                fwd_ret = future.iloc[0]
                 if pd.isna(fwd_ret):
                     continue
                 signals_list.append(-z)  # contrarian: negative zscore = bullish

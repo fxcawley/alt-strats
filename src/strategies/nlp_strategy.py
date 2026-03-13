@@ -61,7 +61,6 @@ class NLPFilingStrategy:
         self.n_long = n_long
         self.n_short = n_short
         self.stale_days = stale_days
-        self._last_weights: dict[str, float] | None = None
 
     def generate_signals(
         self,
@@ -82,8 +81,8 @@ class NLPFilingStrategy:
         ]
 
         if not relevant:
-            # No filings available yet -- keep existing positions or stay in cash
-            return self._last_weights if self._last_weights else None
+            # No filings have ever been available -- no opinion yet
+            return None
 
         # Filter out stale filings
         cutoff = date - pd.Timedelta(days=self.stale_days)
@@ -93,17 +92,18 @@ class NLPFilingStrategy:
         ]
 
         if not fresh:
-            return self._last_weights if self._last_weights else None
+            # All filings are stale -- signal says go to cash
+            return {}
 
         # Build signal DataFrame
         signal_df = build_filing_signal_df(fresh, as_of_date=date)
         if signal_df.empty:
-            return self._last_weights if self._last_weights else None
+            return {}
 
         # Only use tickers in the current universe
         signal_df = signal_df[signal_df.index.isin(universe)]
         if signal_df.empty:
-            return self._last_weights if self._last_weights else None
+            return {}
 
         # Convert to weights
         weights = signal_to_weights(
@@ -113,5 +113,5 @@ class NLPFilingStrategy:
             long_only=self.long_only,
         )
 
-        self._last_weights = weights
+        # signal_to_weights returns {} if no positions pass the filter
         return weights

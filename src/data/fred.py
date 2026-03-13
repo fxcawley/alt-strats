@@ -178,6 +178,7 @@ def fetch_all_macro_series(
     end_date: str | None = None,
     use_cache: bool = True,
     apply_pub_lag: bool = True,
+    use_vintage: bool = True,
 ) -> pd.DataFrame:
     """Fetch all standard macro series from FRED with publication lag applied.
 
@@ -192,13 +193,32 @@ def fetch_all_macro_series(
         lag so the index reflects when the data was available, not when
         the observation period ended. Set to False only for exploratory
         analysis where you understand the look-ahead implications.
+    use_vintage : bool
+        If True (default), uses ALFRED vintage data to get initial-release
+        values instead of revised values. Falls back to revised data if
+        the vintage API isn't available for a given series, but logs a
+        warning. Set to False only for exploratory analysis.
     """
     series_dict = {}
     for name, meta in MACRO_SERIES.items():
         series_id = meta["id"]
         lag_days = meta["lag_days"]
         try:
-            data = fetch_fred_series(series_id, start_date, end_date, use_cache)
+            if use_vintage:
+                vintage_df = fetch_fred_series_vintage(
+                    series_id, start_date, end_date, use_cache
+                )
+                if not vintage_df["is_vintage_correct"].all():
+                    print(f"Warning: {name} ({series_id}) vintage data not "
+                          f"available -- using revised values (look-ahead risk)")
+                data = pd.Series(
+                    vintage_df["value"].values,
+                    index=pd.DatetimeIndex(vintage_df["observation_date"]),
+                    name=series_id,
+                )
+            else:
+                data = fetch_fred_series(series_id, start_date, end_date, use_cache)
+
             if apply_pub_lag:
                 data = _apply_publication_lag(data, lag_days)
             series_dict[name] = data

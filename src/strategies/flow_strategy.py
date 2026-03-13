@@ -45,7 +45,6 @@ class FlowStrategy:
         self.long_only = long_only
         self.n_long = n_long
         self.n_short = n_short
-        self._last_weights: dict[str, float] | None = None
 
     def generate_signals(
         self,
@@ -53,11 +52,16 @@ class FlowStrategy:
         universe: list[str],
         lookback: dict[str, pd.DataFrame],
     ) -> dict[str, float] | None:
-        """Generate portfolio weights from flow signals."""
+        """Generate portfolio weights from flow signals.
+
+        Returns None if no COT data is available yet for this date.
+        Returns {} if the signal produces no valid positions (go to cash).
+        """
         signal = self.signal_computer.get_signal(date)
 
         if signal.empty:
-            return self._last_weights if self._last_weights else None
+            # No positioning data available for this date
+            return None
 
         weights = flow_signal_to_weights(
             signal, universe,
@@ -66,8 +70,5 @@ class FlowStrategy:
             long_only=self.long_only,
         )
 
-        if not weights:
-            return self._last_weights if self._last_weights else None
-
-        self._last_weights = weights
+        # weights can be {} if no tickers in signal are in universe
         return weights
