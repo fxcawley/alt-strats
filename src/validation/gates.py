@@ -80,6 +80,12 @@ def gate1_information_coefficient(
     Computes rank IC (Spearman correlation) between predicted signal
     and realized returns. IC > 0.02 is meaningful for monthly returns.
     IC > 0.05 is strong.
+
+    NOTE: This gate uses abs(ic) -- a signal with IC = -0.03 passes.
+    This is intentional: a consistently inversely-predictive signal is
+    just as useful as a positively-predictive one (invert it). If you
+    want to require a specific direction, check the sign of ic in the
+    returned GateResult.metric_value.
     """
     try:
         ic = information_coefficient(predicted_scores, realized_returns)

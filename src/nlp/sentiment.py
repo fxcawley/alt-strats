@@ -130,7 +130,7 @@ def _create_minimal_dictionary():
         "dispute", "disregard", "disrupt", "dissent", "dissolve", "divert",
         "divest", "doubt", "downgrade", "downsize", "downturn", "drop",
         "encumber", "erode", "erosion", "escalate", "evade", "evict",
-        "exacerbate", "exaggerate", "exceed", "excessive", "exclude",
+        "exacerbate", "exaggerate", "excessive", "exclude",
         "exhaust", "exploit", "expose", "fail", "failure", "false",
         "fault", "felony", "fine", "fire", "flaw", "flee", "forbid",
         "force", "foreclose", "forfeit", "fraud", "fraudulent", "freeze",

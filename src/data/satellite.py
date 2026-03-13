@@ -6,10 +6,13 @@ activity proxies. Month-over-month luminosity changes at the country
 level correlate with GDP growth and can be used as a leading indicator
 for country/sector ETFs.
 
+LOOK-AHEAD BIAS: VIIRS composites have a 2-3 month publication lag.
+The code applies a 90-day (conservative) offset so that .loc[:date]
+only returns data that was actually available at that time.
+
 In practice, this module provides a framework for processing the data.
 Actual VIIRS composites are large GeoTIFF files (~500MB per month).
-For this project, we use pre-aggregated country-level data or
-demonstrate the pipeline with synthetic data.
+For this project, we use pre-aggregated country-level data.
 """
 
 from __future__ import annotations
@@ -21,6 +24,9 @@ import numpy as np
 import pandas as pd
 
 SATELLITE_DIR = Path(__file__).resolve().parents[2] / "data" / "satellite"
+
+# Publication lag for VIIRS composites (conservative estimate)
+VIIRS_PUBLICATION_LAG_DAYS = 90
 
 # Country -> ETF mapping for satellite signals
 COUNTRY_ETF_MAP = {
@@ -57,11 +63,18 @@ def load_luminosity_data(filepath: str | Path | None = None) -> pd.DataFrame:
 
 def compute_luminosity_change(
     luminosity_df: pd.DataFrame,
+    apply_pub_lag: bool = True,
 ) -> pd.DataFrame:
     """Compute month-over-month luminosity change per country.
 
     Returns a pivoted DataFrame: index=date, columns=country,
     values=pct_change in luminosity.
+
+    Parameters
+    ----------
+    apply_pub_lag : bool
+        If True (default), shifts the index forward by VIIRS_PUBLICATION_LAG_DAYS
+        so that .loc[:date] only returns data available at that time.
     """
     if luminosity_df.empty:
         return pd.DataFrame()
@@ -73,7 +86,12 @@ def compute_luminosity_change(
         aggfunc="mean",
     )
     pivot = pivot.sort_index()
-    return pivot.pct_change()
+    changes = pivot.pct_change()
+
+    if apply_pub_lag:
+        changes.index = changes.index + pd.Timedelta(days=VIIRS_PUBLICATION_LAG_DAYS)
+
+    return changes
 
 
 def luminosity_to_etf_signals(
@@ -95,57 +113,18 @@ def luminosity_to_etf_signals(
 
     latest = available.iloc[-1]
 
-    signals = {}
+    signals: dict[str, list[float]] = {}
     for country, change in latest.items():
         if pd.isna(change):
             continue
         etfs = COUNTRY_ETF_MAP.get(country, [])
         for etf in etfs:
-            if etf in signals:
-                signals[etf] = (signals[etf] + change) / 2
-            else:
-                signals[etf] = change
+            if etf not in signals:
+                signals[etf] = []
+            signals[etf].append(change)
 
-    return signals
+    # Equal-weight average across all countries mapping to each ETF
+    return {etf: sum(vals) / len(vals) for etf, vals in signals.items() if vals}
 
 
-def create_synthetic_luminosity(
-    countries: list[str] | None = None,
-    start_date: str = "2012-01-01",
-    end_date: str = "2025-12-01",
-    seed: int = 42,
-) -> pd.DataFrame:
-    """Create synthetic luminosity data for testing.
 
-    Generates monthly luminosity values with realistic statistical
-    properties (trending upward with noise, correlated across countries).
-    This is for pipeline testing only -- not for signal generation.
-    """
-    if countries is None:
-        countries = list(COUNTRY_ETF_MAP.keys())
-
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(start_date, end_date, freq="MS")
-    n = len(dates)
-
-    # Base trend + correlated noise
-    base_trend = np.linspace(100, 150, n)
-    correlation = 0.7
-
-    rows = []
-    shared_noise = rng.normal(0, 3, n)
-    for country in countries:
-        idiosyncratic = rng.normal(0, 2, n)
-        luminosity = base_trend + correlation * shared_noise + (1 - correlation) * idiosyncratic
-        # Add country-specific growth rate
-        growth_factor = 1 + rng.uniform(-0.005, 0.01)
-        luminosity *= np.cumprod(np.full(n, growth_factor))
-
-        for date, lum in zip(dates, luminosity):
-            rows.append({
-                "date": date,
-                "country": country,
-                "luminosity": max(lum, 0),
-            })
-
-    return pd.DataFrame(rows)

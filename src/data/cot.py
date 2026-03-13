@@ -47,7 +47,8 @@ CONTRACT_TO_TICKER = {
     "CRUDE OIL, LIGHT SWEET": "XLE",
     "CRUDE OIL": "XLE",
     "NATURAL GAS": "XLE",
-    "VIX FUTURES": "SPY",  # VIX as inverse signal for equities
+    # VIX is NOT mapped to SPY. VIX positioning and equity positioning
+    # are different signals and conflating them corrupts both.
 }
 
 
@@ -91,16 +92,23 @@ def _clean_cot_df(df: pd.DataFrame) -> pd.DataFrame:
         col_map[c] = clean
     df = df.rename(columns=col_map)
 
-    # Parse date
+    # Parse date -- prefer YYYY-MM-DD column which is unambiguous
     date_col = None
-    for candidate in ["As_of_Date_In_Form_YYMMDD", "As of Date in Form YYMMDD",
-                       "Report_Date_as_YYYY-MM-DD", "As_of_Date_In_Form_YYYY-MM-DD"]:
+    for candidate in ["As of Date in Form YYYY-MM-DD",
+                       "As_of_Date_In_Form_YYYY-MM-DD",
+                       "Report_Date_as_YYYY-MM-DD"]:
         if candidate in df.columns:
             date_col = candidate
             break
 
     if date_col is None:
-        # Try to find any date-like column
+        # Fall back to YYMMDD format
+        for candidate in ["As_of_Date_In_Form_YYMMDD", "As of Date in Form YYMMDD"]:
+            if candidate in df.columns:
+                date_col = candidate
+                break
+
+    if date_col is None:
         for c in df.columns:
             if "date" in c.lower():
                 date_col = c

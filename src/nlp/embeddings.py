@@ -31,16 +31,17 @@ def _get_model():
     return _MODEL
 
 
-def compute_embedding(text: str, max_length: int = 10_000) -> np.ndarray:
+def compute_embedding(text: str, max_length: int = 10_000) -> np.ndarray | None:
     """Compute a document-level embedding for a text.
 
     Truncates to max_length characters before embedding (the model
     has a 512 token limit; we chunk and average for longer texts).
 
-    Returns a 1-D numpy array (the embedding vector).
+    Returns a 1-D numpy array (the embedding vector), or None if the
+    text is too short to produce a meaningful embedding.
     """
     if not text or len(text.strip()) < 50:
-        return np.zeros(384)  # MiniLM output dimension
+        return None  # Signal "no valid embedding" instead of a zero vector
 
     model = _get_model()
 
@@ -53,7 +54,7 @@ def compute_embedding(text: str, max_length: int = 10_000) -> np.ndarray:
         chunks.append(chunk)
 
     if not chunks:
-        return np.zeros(384)
+        return None
 
     # Limit to first 25 chunks (~10K words) for efficiency
     chunks = chunks[:25]
@@ -73,15 +74,21 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def compute_embedding_change(
     current_text: str,
     prior_text: str,
-) -> dict[str, float]:
+) -> dict[str, float] | None:
     """Compute embedding-based change features between two filings.
 
+    Returns None if either text is too short to embed (avoids the
+    false-signal problem where a zero vector produces distance=1.0).
+
     Returns:
-        full_similarity: cosine sim of full document embeddings
+        embedding_similarity: cosine sim of full document embeddings
         embedding_distance: 1 - cosine_similarity (higher = more change)
     """
     current_emb = compute_embedding(current_text)
     prior_emb = compute_embedding(prior_text)
+
+    if current_emb is None or prior_emb is None:
+        return None  # Cannot compute meaningful change
 
     sim = cosine_similarity(current_emb, prior_emb)
     return {

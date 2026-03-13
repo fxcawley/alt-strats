@@ -108,8 +108,13 @@ def compute_composite_score(features: FilingFeatures) -> float:
     """Compute a single composite score from all NLP features.
 
     Higher score = more positive signal (go long).
-    The score is a simple equal-weighted average of z-scored components.
-    In production, this would be replaced by a trained model.
+
+    IMPORTANT: Uses a FIXED number of components (7) regardless of data
+    availability. Missing components are set to 0.0 (neutral). This
+    ensures all stocks are scored on the same scale -- variable-length
+    averaging would bias the cross-sectional ranking because stocks
+    with change features would have different signal scales than stocks
+    without.
 
     Components (direction):
       + net_sentiment (higher = more positive language)
@@ -117,39 +122,32 @@ def compute_composite_score(features: FilingFeatures) -> float:
       - uncertainty_ratio (more uncertainty = worse)
       - gunning_fog (more complex/obfuscated = worse)
       + sentiment_change (improving tone = positive)
-      + embedding_distance (more change = potentially informative; signed by sentiment change)
+      - delta_negative_ratio (decreasing negativity = positive)
+      + embedding_distance * sign(sentiment_change) (signed content change)
     """
-    components = []
-
-    # Level features
     s = features.sentiment
-    components.append(s.get("mda_net_sentiment", 0.0))
-    components.append(-s.get("mda_negative_ratio", 0.0))
-    components.append(-s.get("mda_uncertainty_ratio", 0.0))
 
-    # Readability (negative: more complex = worse)
-    fog = features.readability.get("mda_gunning_fog", 15.0)
-    # Normalize fog to ~[-1, 1] range (typical range 12-22)
-    components.append(-(fog - 17.0) / 5.0)
+    # Always 7 components, missing features = 0.0 (neutral)
+    c1 = s.get("mda_net_sentiment", 0.0)
+    c2 = -s.get("mda_negative_ratio", 0.0)
+    c3 = -s.get("mda_uncertainty_ratio", 0.0)
 
-    # Change features (if available)
+    fog = features.readability.get("mda_gunning_fog", 17.0)
+    c4 = -(fog - 17.0) / 5.0
+
+    c5 = 0.0  # delta net sentiment
+    c6 = 0.0  # delta negative ratio
     if features.sentiment_change:
-        # Improving net sentiment is positive
-        components.append(features.sentiment_change.get("delta_net_sentiment", 0.0))
-        # Decreasing negativity is positive
-        components.append(-features.sentiment_change.get("delta_negative_ratio", 0.0))
+        c5 = features.sentiment_change.get("delta_net_sentiment", 0.0)
+        c6 = -features.sentiment_change.get("delta_negative_ratio", 0.0)
 
-    # Embedding change (if available, signed by sentiment direction)
+    c7 = 0.0  # embedding change (signed)
     if features.embedding_change and features.sentiment_change:
         distance = features.embedding_change.get("embedding_distance", 0.0)
         sentiment_dir = features.sentiment_change.get("delta_net_sentiment", 0.0)
-        # Large change + positive sentiment direction = positive signal
-        components.append(distance * np.sign(sentiment_dir) if sentiment_dir != 0 else 0.0)
+        c7 = distance * np.sign(sentiment_dir) if sentiment_dir != 0 else 0.0
 
-    if not components:
-        return 0.0
-
-    return float(np.mean(components))
+    return float((c1 + c2 + c3 + c4 + c5 + c6 + c7) / 7.0)
 
 
 def build_filing_signal_df(
