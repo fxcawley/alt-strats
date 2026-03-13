@@ -1,0 +1,43 @@
+# Core data & numerics
+numpy>=1.26
+pandas>=2.2
+pyarrow>=15.0
+
+# Market data
+yfinance>=0.2.36
+
+# Visualization
+matplotlib>=3.8
+seaborn>=0.13
+
+# Statistics & ML
+scipy>=1.12
+scikit-learn>=1.4
+statsmodels>=0.14
+
+# NLP - SEC filing analysis
+beautifulsoup4>=4.12
+lxml>=5.1
+sentence-transformers>=3.0
+spacy>=3.7
+
+# EDGAR access
+sec-edgar-downloader>=5.0
+
+# FRED economic data
+fredapi>=0.5
+
+# Google Trends
+pytrends>=4.9
+
+# HTTP
+requests>=2.31
+curl_cffi>=0.7
+
+# Jupyter for interactive exploration
+jupyter>=1.0
+ipykernel>=6.29
+
+# Utilities
+tqdm>=4.66
+python-dateutil>=2.8

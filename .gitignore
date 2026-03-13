@@ -1,0 +1,32 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data cache
+data/cache/
+data/filings/
+data/satellite/
+data/cot/
+
+# Loughran-McDonald dictionary (downloaded at runtime)
+data/LoughranMcDonald_*.csv
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
