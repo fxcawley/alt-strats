@@ -173,8 +173,8 @@ def run_one(name, strategy, universe, start, end, rebalance_freq="ME", cost_pct=
 
 def main():
     print("=" * 70)
-    print("  REAL DATA COMPARISON: COT flow signal vs strat-testing baseline")
-    print("  (no synthetics, no proxies)")
+    print("  REAL DATA COMPARISON: alt-strats vs strat-testing baseline")
+    print("  (no synthetics, no proxies -- real CFTC + FRED data)")
     print("=" * 70)
 
     # ── Load real COT data ───────────────────────────────────────────────
@@ -187,6 +187,27 @@ def main():
     positioning = compute_net_positioning(cot_df)
     zscore = compute_positioning_zscore(positioning, lookback_weeks=52)
     print(f"  {len(positioning)} weekly dates, {list(positioning.columns)}")
+
+    # ── Load real FRED data ──────────────────────────────────────────────
+    import os
+    fred_surprises = None
+    if os.environ.get("FRED_API_KEY"):
+        from src.data.fred import fetch_all_macro_series, compute_fred_surprise
+        from src.strategies.geo_strategy import GeoStrategy
+        print("\nLoading FRED macro data (vintage-correct, pub-lag adjusted)...")
+        try:
+            macro_df = fetch_all_macro_series(
+                start_date="2005-01-01", use_cache=True,
+                apply_pub_lag=True, use_vintage=True,
+            )
+            fred_surprises = compute_fred_surprise(macro_df)
+            print(f"  {len(macro_df)} dates x {len(macro_df.columns)} series")
+            n_vintage_warn = 0
+            print(f"  FRED surprise data ready")
+        except Exception as e:
+            print(f"  FRED loading failed: {e}")
+    else:
+        print("\nFRED_API_KEY not set -- skipping FRED data")
 
     # ── Run all strategies ───────────────────────────────────────────────
     rows = []
@@ -223,9 +244,28 @@ def main():
         s3 = flow.summary()
         print(f"Sharpe={s3['sharpe_ratio']:.2f}")
 
-        for name, result in [("XS Mom + Trend (baseline)", baseline),
-                              ("XS Momentum", xs_mom),
-                              ("Flow Contrarian (REAL COT)", flow)]:
+        # 4. Real FRED Macro (GeoStrategy with only FRED surprises)
+        geo_result = None
+        if fred_surprises is not None:
+            from src.strategies.geo_strategy import GeoStrategy
+            print("  Running FRED Macro (REAL FRED)...", end=" ", flush=True)
+            geo_result = run_one(
+                "FRED Macro",
+                GeoStrategy(fred_surprises=fred_surprises, long_only=True),
+                MULTI_ASSET, start, end,
+            )
+            s4 = geo_result.summary()
+            print(f"Sharpe={s4['sharpe_ratio']:.2f}")
+
+        strategy_results = [
+            ("XS Mom + Trend (baseline)", baseline),
+            ("XS Momentum", xs_mom),
+            ("Flow Contrarian (REAL COT)", flow),
+        ]
+        if geo_result is not None:
+            strategy_results.append(("FRED Macro (REAL FRED)", geo_result))
+
+        for name, result in strategy_results:
             sm = result.summary()
             a, b = alpha_beta(result.returns, result.benchmark_returns)
             t = t_test_alpha(result.excess_returns)
@@ -337,14 +377,177 @@ def main():
     )
     print(f"\n{report.summary()}")
 
+    # ── 5-gate validation on FRED Macro ──────────────────────────────────
+    if fred_surprises is not None and geo_result is not None:
+        print(f"\n\n{'=' * 70}")
+        print("  5-GATE VALIDATION: FRED Macro (REAL FRED)")
+        print(f"{'=' * 70}")
+
+        fred_sharpes = strategies_by_name.get("FRED Macro (REAL FRED)", {})
+
+        # Build cross-sectional signal/return pairs from FRED surprises
+        # The signal for each ETF-month is the average macro surprise
+        fred_signals = []
+        fred_returns = []
+        from src.data.prices import fetch_prices as fp2
+        for ticker in MULTI_ASSET:
+            try:
+                pr = fp2(ticker, start="2010-01-01")
+                monthly_close = pr["Close"].resample("ME").last()
+                fwd_monthly = monthly_close.pct_change().shift(-1)
+
+                # Average surprise across all series for each date
+                avg_surprise = fred_surprises.mean(axis=1).dropna()
+
+                for date in avg_surprise.index:
+                    s_val = avg_surprise.loc[date]
+                    future = fwd_monthly.loc[date:]
+                    if future.empty:
+                        continue
+                    r_val = future.iloc[0]
+                    if pd.isna(r_val) or pd.isna(s_val):
+                        continue
+                    fred_signals.append(s_val)
+                    fred_returns.append(r_val)
+            except Exception:
+                continue
+
+        if len(fred_signals) > 50:
+            from src.validation.gates import gate1_information_coefficient, gate2_quintile_monotonicity
+            fg1 = gate1_information_coefficient(pd.Series(fred_signals), pd.Series(fred_returns))
+            fg2 = gate2_quintile_monotonicity(pd.Series(fred_signals), pd.Series(fred_returns))
+            print(f"\n  {fg1}")
+            print(f"  {fg2}")
+            if fg2.details.get("quintile_returns"):
+                print(f"\n  Quintile mean returns:")
+                for q, r in fg2.details["quintile_returns"].items():
+                    print(f"    Q{int(q)}: {r:+.4f}")
+                print(f"    L-S spread: {fg2.details.get('long_short_spread', 0):+.4f}")
+
+        fred_report = run_validation(
+            signal_name="FRED Macro (REAL FRED)",
+            predicted_scores=pd.Series(fred_signals) if len(fred_signals) > 50 else None,
+            realized_returns=pd.Series(fred_returns) if len(fred_returns) > 50 else None,
+            strategy_returns=geo_result.returns,
+            sharpe_by_period=fred_sharpes if len(fred_sharpes) >= 2 else None,
+        )
+        print(f"\n{fred_report.summary()}")
+
+    # ── Gate 5: Incremental R-squared ────────────────────────────────────
+    print(f"\n\n{'=' * 70}")
+    print("  GATE 5: INCREMENTAL R-SQUARED (alt-data above momentum)")
+    print(f"{'=' * 70}")
+
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import r2_score
+    from src.ml.features import compute_etf_features
+
+    # Build a panel: for each ETF-month, compute momentum features
+    # then test if COT z-scores and/or FRED surprises add OOS R-squared
+    print("\n  Building feature panel for incremental R-sq test...")
+    panel_rows = []
+    for ticker in MULTI_ASSET:
+        try:
+            pr = fp2(ticker, start="2010-01-01") if fred_surprises is not None else fetch_prices(ticker, start="2010-01-01")
+            monthly_close = pr["Close"].resample("ME").last()
+            fwd_ret = monthly_close.pct_change().shift(-1)
+
+            for i in range(12, len(monthly_close) - 1):
+                date = monthly_close.index[i]
+                ret_val = fwd_ret.iloc[i]
+                if pd.isna(ret_val):
+                    continue
+
+                # Momentum features
+                c = monthly_close.iloc[:i+1]
+                if len(c) < 13:
+                    continue
+                mom_12_1 = c.iloc[-2] / c.iloc[-13] - 1 if len(c) > 13 else np.nan
+                mom_3 = c.iloc[-1] / c.iloc[-4] - 1 if len(c) > 4 else np.nan
+                vol_3m = c.pct_change().iloc[-3:].std() if len(c) > 3 else np.nan
+
+                row = {
+                    "ticker": ticker, "date": date,
+                    "fwd_return": ret_val,
+                    "mom_12_1": mom_12_1, "mom_3m": mom_3, "vol_3m": vol_3m,
+                }
+
+                # COT feature: most recent z-score on or before this date
+                if ticker in zscore.columns:
+                    cot_avail = zscore[ticker].loc[:date].dropna()
+                    if not cot_avail.empty:
+                        row["cot_zscore"] = -cot_avail.iloc[-1]  # contrarian
+
+                # FRED feature: average macro surprise
+                if fred_surprises is not None:
+                    fred_avail = fred_surprises.loc[:date].mean(axis=1).dropna()
+                    if not fred_avail.empty:
+                        row["fred_surprise"] = fred_avail.iloc[-1]
+
+                panel_rows.append(row)
+        except Exception:
+            continue
+
+    if len(panel_rows) < 100:
+        print("  Insufficient panel data for R-sq test")
+    else:
+        panel = pd.DataFrame(panel_rows).dropna(subset=["fwd_return", "mom_12_1"])
+        print(f"  Panel: {len(panel)} obs, {panel['ticker'].nunique()} tickers")
+
+        # Split: train on first 60%, test on last 40%
+        panel = panel.sort_values("date")
+        split_idx = int(len(panel) * 0.6)
+        train = panel.iloc[:split_idx]
+        test = panel.iloc[split_idx:]
+
+        base_features = ["mom_12_1", "mom_3m", "vol_3m"]
+        alt_features_cot = base_features + ["cot_zscore"]
+        alt_features_fred = base_features + ["fred_surprise"]
+        alt_features_all = base_features + ["cot_zscore", "fred_surprise"]
+
+        results_r2 = {}
+        for feat_name, feat_cols in [
+            ("Momentum only", base_features),
+            ("+ COT z-score", alt_features_cot),
+            ("+ FRED surprise", alt_features_fred),
+            ("+ COT + FRED", alt_features_all),
+        ]:
+            cols = [c for c in feat_cols if c in panel.columns]
+            tr = train.dropna(subset=cols + ["fwd_return"])
+            te = test.dropna(subset=cols + ["fwd_return"])
+            if len(tr) < 50 or len(te) < 20:
+                print(f"  {feat_name}: insufficient data")
+                continue
+
+            model = Ridge(alpha=1.0)
+            model.fit(tr[cols], tr["fwd_return"])
+            pred = model.predict(te[cols])
+            r2 = r2_score(te["fwd_return"], pred)
+            results_r2[feat_name] = r2
+
+        if results_r2:
+            baseline_r2 = results_r2.get("Momentum only", 0.0)
+            print(f"\n  Out-of-sample R-squared:")
+            for name, r2 in results_r2.items():
+                increment = r2 - baseline_r2
+                flag = ""
+                if name != "Momentum only":
+                    flag = f"  (incremental: {increment:+.4f})"
+                    if increment > 0.005:
+                        flag += " PASS"
+                    else:
+                        flag += " FAIL"
+                print(f"    {name:25s}: {r2:.4f}{flag}")
+
     print(f"\n\n{'=' * 70}")
     print("  NOTES")
     print(f"{'=' * 70}")
     print("  - COT data: real CFTC downloads, publication-date aligned (Tue+3bd)")
+    print("  - FRED data: vintage-correct (ALFRED), publication-lag adjusted")
     print("  - VIX futures excluded from SPY mapping (separate signal)")
-    print("  - Weekly rebalance, 3bps cost, 2% threshold")
-    print("  - FRED/Google Trends/EDGAR/Satellite: need API keys or network access")
-    print("  - Set FRED_API_KEY and re-run to include macro data")
+    print("  - Weekly rebalance for COT, monthly for FRED/baseline")
+    print("  - 3bps cost, 2% rebalance threshold")
+    print("  - Gate 5 uses Ridge regression, train 60%/test 40% temporal split")
     print(f"{'=' * 70}")
 
 
